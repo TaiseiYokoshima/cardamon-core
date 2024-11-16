@@ -27,9 +27,9 @@ static LINE_ENDING: &str = "\r\n";
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     pub cpu: Cpu,
-    #[serde(rename(serialize = "process", deserialize = "process"))]
+    #[serde(rename(serialize = "process", deserialize = "process"), default)]
     pub processes: Vec<Process>,
-    #[serde(rename(serialize = "scenario", deserialize = "scenario"))]
+    #[serde(rename(serialize = "scenario", deserialize = "scenario"), default)]
     pub scenarios: Vec<Scenario>,
     #[serde(rename(serialize = "observation", deserialize = "observation"))]
     pub observations: Vec<Observation>,
