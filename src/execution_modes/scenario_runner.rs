@@ -71,7 +71,7 @@ pub async fn run_scenarios<'a>(
     ci: f64,
     scenarios: Vec<&'a Scenario>,
     processes_to_observe: Vec<ProcessToObserve>,
-    db: &DatabaseConnection,
+    db: DatabaseConnection,
 ) -> anyhow::Result<()> {
     let start_time = Utc::now().timestamp_millis();
 
@@ -86,7 +86,7 @@ pub async fn run_scenarios<'a>(
         start_time: ActiveValue::Set(start_time),
         stop_time: ActiveValue::set(None),
     }
-    .insert(db)
+    .insert(&db)
     .await?
     .into_active_model();
 
@@ -114,7 +114,7 @@ pub async fn run_scenarios<'a>(
 
             // run the scenario
             let scenario_iteration = run_scenario(&run_id, &scenario, iteration).await?;
-            scenario_iteration.save(db).await?;
+            scenario_iteration.save(&db).await?;
 
             // stop the metrics loggers
             stop_handle.stop().await;
@@ -126,7 +126,7 @@ pub async fn run_scenarios<'a>(
 
     // update run with the stop time
     active_run.stop_time = ActiveValue::Set(Some(stop_time));
-    active_run.save(db).await?;
+    active_run.save(&db).await?;
 
     // stop the application
     shutdown_processes(&processes_to_observe)?;

@@ -99,7 +99,7 @@ pub async fn run(
     exec_plan: ExecutionPlan<'_>,
     region: &Option<String>,
     ci: f64,
-    db: &DatabaseConnection,
+    db: DatabaseConnection,
 ) -> anyhow::Result<()> {
     let mut processes_to_observe = exec_plan.external_processes_to_observe.unwrap_or(vec![]); // external procs to observe are cloned here.
 
@@ -127,7 +127,7 @@ pub async fn run(
     // a new one
     let cpu = cpu::Entity::find()
         .filter(cpu::Column::Name.eq(&exec_plan.cpu.name))
-        .one(db)
+        .one(&db)
         .await?;
 
     let cpu_id = match cpu {
@@ -141,7 +141,7 @@ pub async fn run(
                         tdp: ActiveValue::Set(Some(tdp)),
                         power_curve_id: ActiveValue::NotSet,
                     }
-                    .save(db)
+                    .save(&db)
                     .await
                 }
 
@@ -153,7 +153,7 @@ pub async fn run(
                         c: ActiveValue::Set(c),
                         d: ActiveValue::Set(d),
                     }
-                    .save(db)
+                    .save(&db)
                     .await?
                     .try_into_model()?;
 
@@ -163,7 +163,7 @@ pub async fn run(
                         tdp: ActiveValue::NotSet,
                         power_curve_id: ActiveValue::Set(Some(power_curve.id)),
                     }
-                    .save(db)
+                    .save(&db)
                     .await
                 }
             }?;
@@ -188,17 +188,17 @@ pub async fn run(
                 ci,
                 scenarios,
                 processes_to_observe.clone(),
-                db,
+                db.clone(),
             )
             .await?;
         }
 
         ExecutionMode::Live => {
-            run_live(cpu_id, region, ci, processes_to_observe.clone(), db).await?;
+            run_live(cpu_id, region, ci, processes_to_observe.clone(), db.clone()).await?;
         }
 
         ExecutionMode::Daemon => {
-            run_daemon(cpu_id, region, ci, processes_to_observe.clone(), db).await?;
+            run_daemon(cpu_id, region, ci, processes_to_observe.clone(), db.clone()).await?;
         }
     };
 

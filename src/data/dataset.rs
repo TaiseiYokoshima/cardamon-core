@@ -294,7 +294,7 @@ impl<'a> ScenarioRunDataset<'a> {
         // build up process map
         // proc_id  |  data & metrics per iteration for proc per iteration
         // =======================================
-        // proc_id -> [<(data, [metrics)>, <(data, metrics)>]    <- 2 iterations
+        // proc_id -> [<(data, metrics)>, <(data, metrics)>]    <- 2 iterations
         // proc_id -> [<(data, metrics)>, <(data, metrics)>]    <- 2 iterations
         let mut proc_iteration_data_map: HashMap<String, (Vec<Data>, Vec<Vec<ProcessMetrics>>)> =
             HashMap::new();

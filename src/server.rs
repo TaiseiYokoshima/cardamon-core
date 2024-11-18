@@ -1,5 +1,5 @@
 pub mod errors;
-mod routes;
+pub mod routes;
 
 use anyhow::Context;
 use axum::response::{IntoResponse, Response};

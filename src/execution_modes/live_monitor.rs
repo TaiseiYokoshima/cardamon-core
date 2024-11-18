@@ -12,7 +12,7 @@ pub async fn run_live<'a>(
     region: &Option<String>,
     ci: f64,
     processes_to_observe: Vec<ProcessToObserve>,
-    db: &DatabaseConnection,
+    db: DatabaseConnection,
 ) -> anyhow::Result<()> {
     let start_time = Utc::now().timestamp_millis();
 
@@ -27,7 +27,7 @@ pub async fn run_live<'a>(
         start_time: ActiveValue::Set(start_time),
         stop_time: ActiveValue::set(None),
     }
-    .insert(db)
+    .insert(&db)
     .await?
     .into_active_model();
 
@@ -44,7 +44,7 @@ pub async fn run_live<'a>(
         start_time: ActiveValue::Set(start),
         stop_time: ActiveValue::Set(None),
     };
-    iteration.save(db).await?;
+    iteration.save(&db).await?;
 
     // start the metrics logger
     let mut stop_handle =
@@ -54,30 +54,4 @@ pub async fn run_live<'a>(
     while let Some(_) = stop_handle.join_set.join_next().await {}
 
     Ok(())
-
-    // // keep saving!
-    // let shared_metrics_log = stop_handle.shared_metrics_log.clone();
-    // loop {
-    //     tokio::time::sleep(Duration::from_secs(1)).await;
-
-    //     let shared_metrics_log = shared_metrics_log.clone();
-    //     let mut metrics_log = shared_metrics_log.lock().unwrap();
-
-    //     metrics_log.save(&run_id, &db).await?;
-    //     metrics_log.clear();
-
-    //     // update the iteration stop time
-    //     let now = Utc::now().timestamp_millis();
-    //     let mut active_iteration = dao::iteration::fetch_live(&run_id, &db)
-    //         .await?
-    //         .into_active_model();
-    //     active_iteration.stop_time = ActiveValue::Set(now);
-    //     active_iteration.update(db).await?;
-
-    //     // update the run stop time
-    //     let now = Utc::now().timestamp_millis();
-    //     // let mut active_run = dao::run::fetch(run_id, &db).await?.into_active_model();
-    //     active_run.stop_time = ActiveValue::Set(now);
-    //     active_run.clone().update(db).await?;
-    // }
 }

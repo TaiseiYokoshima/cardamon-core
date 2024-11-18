@@ -1,5 +1,13 @@
 use crate::{
-    entities, execution_plan::ProcessToObserve, metrics_logger, server::errors::ServerError,
+    data::dataset::{Dataset, ScenarioRunDataset},
+    entities,
+    execution_plan::ProcessToObserve,
+    metrics_logger,
+    models::rab_model,
+    server::{
+        errors::ServerError,
+        routes::{ProcessResponse, RunResponse},
+    },
 };
 use anyhow::Context;
 use axum::{
@@ -9,13 +17,25 @@ use axum::{
 };
 use chrono::Utc;
 use colored::Colorize;
+use itertools::*;
 use sea_orm::*;
 use serde::{self, Deserialize};
 use tokio::sync::mpsc;
 
+#[derive(Clone)]
+struct ServerState {
+    tx: mpsc::Sender<Signal>,
+    db: DatabaseConnection,
+}
+
 enum Signal {
-    Start { run_id: String },
-    Stop,
+    Start {
+        run_id: String,
+        resp_tx: mpsc::Sender<Result<(), ServerError>>,
+    },
+    Stop {
+        resp_tx: mpsc::Sender<Result<Dataset, ServerError>>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,24 +45,77 @@ pub struct StartParams {
 }
 
 async fn start(
-    State(tx): State<mpsc::Sender<Signal>>,
+    State(state): State<ServerState>,
     Query(params): Query<StartParams>,
-) -> Result<String, ServerError> {
+) -> Result<(), ServerError> {
     println!("start received {}", params.run_id);
-    tx.send(Signal::Start {
-        run_id: params.run_id,
-    })
-    .await
-    .context("")?;
+    let (resp_tx, mut resp_rx) = mpsc::channel::<Result<(), ServerError>>(1);
+    state
+        .tx
+        .send(Signal::Start {
+            run_id: params.run_id,
+            resp_tx,
+        })
+        .await
+        .context("Failed to send start signal")?;
 
-    Ok("success".to_string())
+    resp_rx
+        .recv()
+        .await
+        .unwrap_or(Err(ServerError(anyhow::anyhow!(
+            "Error receiving response to start signal"
+        ))))
 }
 
-async fn stop(State(tx): State<mpsc::Sender<Signal>>) -> Result<String, ServerError> {
+async fn stop(State(state): State<ServerState>) -> Result<Json<RunResponse>, ServerError> {
     println!("stop received");
-    tx.send(Signal::Stop).await.context("")?;
+    let (resp_tx, mut resp_rx) = mpsc::channel::<Result<Dataset, ServerError>>(1);
+    state
+        .tx
+        .send(Signal::Stop { resp_tx })
+        .await
+        .context("Failed to send stop signal")?;
 
-    Ok("success".to_string())
+    let dataset = resp_rx
+        .recv()
+        .await
+        .unwrap_or(Err(ServerError(anyhow::anyhow!(
+            "Error receiving response to stop signal"
+        ))))?;
+
+    let scenario_datasets = dataset.by_scenario(crate::data::dataset::LiveDataFilter::OnlyLive);
+    let scenario_dataset = scenario_datasets
+        .first()
+        .context("Expected at least one scenario")?;
+
+    let scenario_run_datasets = scenario_dataset.by_run();
+    let scenario_run_dataset = scenario_run_datasets
+        .first()
+        .context("Expected at least one run")?;
+
+    let model_data = scenario_run_dataset
+        .apply_model(&state.db, &rab_model)
+        .await?;
+
+    let processes = model_data
+        .process_data
+        .iter()
+        .map(|data| ProcessResponse {
+            process_name: data.process_id.clone(),
+            pow_contrib_perc: data.pow_perc,
+            iteration_metrics: data.iteration_metrics.clone(),
+        })
+        .collect_vec();
+
+    Ok(Json(RunResponse {
+        region: model_data.region.clone(),
+        start_time: model_data.start_time,
+        duration: model_data.duration(),
+        pow: model_data.data.pow,
+        co2: model_data.data.co2,
+        ci: model_data.ci,
+        processes,
+    }))
 }
 
 pub async fn run_daemon(
@@ -50,22 +123,31 @@ pub async fn run_daemon(
     region: &Option<String>,
     ci: f64,
     processes_to_observe: Vec<ProcessToObserve>,
-    db: &DatabaseConnection,
+    db: DatabaseConnection,
 ) -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::channel::<Signal>(10);
 
-    let db = db.clone();
     let region = region.clone();
+    let db_clone = db.clone();
 
     tokio::spawn(async move {
         loop {
             let mut run_id: String = "".to_string();
+            let mut start_resp_tx: mpsc::Sender<Result<(), ServerError>>;
 
             // wait for signal to start recording
+            // TODO: what if multiple "start" signals are sent? This needs more thought!
             while let Some(signal) = rx.recv().await {
-                if let Signal::Start { run_id: id } = signal {
-                    run_id = id;
-                    println!("Starting {}", run_id);
+                if let Signal::Start {
+                    run_id: id,
+                    resp_tx,
+                } = signal
+                {
+                    // TODO: do a check to see if the run id already exists
+                    //       if it does then reject this signal with an err
+                    run_id = id.clone();
+                    start_resp_tx = resp_tx;
+                    println!("> starting run {}", id.clone());
                     break;
                 }
             }
@@ -74,10 +156,13 @@ pub async fn run_daemon(
 
             // upsert run
             let txn = db.begin().await.unwrap();
-            let active_run = entities::run::Entity::find_by_id(&run_id)
-                .one(&txn)
-                .await
-                .unwrap();
+            let active_run = match entities::run::Entity::find_by_id(&run_id).one(&txn).await {
+                Ok(active_run) => active_run,
+                Err(err) => {
+                    start_resp_tx.send(Err(ServerError(anyhow::anyhow!(""))));
+                    break;
+                }
+            };
 
             let mut active_run = if active_run.is_none() {
                 entities::run::ActiveModel {
@@ -133,7 +218,7 @@ pub async fn run_daemon(
 
             // wait until stop signal is received
             while let Some(signal) = rx.recv().await {
-                if let Signal::Stop = signal {
+                if let Signal::Stop { resp_tx } = signal {
                     println!("Stopping!");
                     break;
                 }
@@ -156,7 +241,10 @@ pub async fn run_daemon(
     let app = Router::new()
         .route("/start", get(start))
         .route("/stop", get(stop))
-        .with_state(tx.clone());
+        .with_state(ServerState {
+            tx: tx.clone(),
+            db: db_clone,
+        });
 
     // Start the Axum server
     println!(
