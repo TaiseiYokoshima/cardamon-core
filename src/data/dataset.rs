@@ -1,12 +1,12 @@
 use crate::{
     config::Power,
-    dao::{self, pagination::Pages},
+    dao::pagination::Pages,
     data::Data,
     entities::{self, iteration::Model as Iteration, metrics::Model as Metrics},
 };
 use anyhow::Context;
 use itertools::Itertools;
-use sea_orm::{DatabaseConnection, ModelTrait};
+use sea_orm::*;
 use std::collections::HashMap;
 
 use super::{ProcessData, ProcessMetrics, RunData, ScenarioData};
@@ -175,7 +175,7 @@ impl<'a> ScenarioDataset<'a> {
 
                 ScenarioRunDataset {
                     scenario_name: self.scenario_name,
-                    run_id: run_id.clone(),
+                    run_id: *run_id,
                     data,
                 }
             })
@@ -242,7 +242,7 @@ impl<'a> ScenarioDataset<'a> {
 #[derive(Debug)]
 pub struct ScenarioRunDataset<'a> {
     scenario_name: &'a str,
-    run_id: String,
+    run_id: i32,
     data: Vec<&'a IterationMetrics>,
 }
 impl<'a> ScenarioRunDataset<'a> {
@@ -250,8 +250,8 @@ impl<'a> ScenarioRunDataset<'a> {
         self.scenario_name
     }
 
-    pub fn run_id(&'a self) -> String {
-        self.run_id.clone()
+    pub fn run_id(&self) -> i32 {
+        self.run_id
     }
 
     pub fn data(&'a self) -> &'a [&'a IterationMetrics] {
@@ -267,7 +267,11 @@ impl<'a> ScenarioRunDataset<'a> {
         db: &DatabaseConnection,
         model: &impl Fn(&Vec<&Metrics>, &Power, f64) -> Data,
     ) -> anyhow::Result<RunData> {
-        let run = dao::run::fetch(&self.run_id, db).await?;
+        let run = entities::run::Entity::find()
+            .filter(entities::run::Column::Id.eq(self.run_id))
+            .one(db)
+            .await?
+            .context(format!("Error fetching run with id {}", self.run_id))?;
         let cpu = run
             .find_related(entities::cpu::Entity)
             .one(db)
@@ -361,7 +365,7 @@ impl<'a> ScenarioRunDataset<'a> {
             .collect_vec();
 
         Ok(RunData {
-            run_id: self.run_id.clone(),
+            run_id: self.run_id,
             region: run.region,
             ci: run.carbon_intensity,
             start_time,
@@ -533,7 +537,7 @@ mod tests {
                         .iter()
                         .map(|ds| ds.run_id.clone())
                         .collect::<Vec<_>>();
-                    assert_eq!(vec!["1"], run_ids);
+                    assert_eq!(vec![1], run_ids);
                 }
 
                 "scenario_2" => {
@@ -542,7 +546,7 @@ mod tests {
                         .iter()
                         .map(|ds| ds.run_id.clone())
                         .collect::<Vec<_>>();
-                    assert_eq!(vec!["2", "1"], run_ids);
+                    assert_eq!(vec![2, 1], run_ids);
                 }
 
                 "scenario_3" => {
@@ -551,7 +555,7 @@ mod tests {
                         .iter()
                         .map(|ds| ds.run_id.clone())
                         .collect::<Vec<_>>();
-                    assert_eq!(vec!["3", "2", "1"], run_ids);
+                    assert_eq!(vec![3, 2, 1], run_ids);
                 }
 
                 _ => panic!("unknown scenario in dataset!"),

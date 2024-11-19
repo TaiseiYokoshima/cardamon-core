@@ -97,7 +97,7 @@ pub fn cleanup_stdout_stderr() -> anyhow::Result<()> {
 
 pub async fn run(
     exec_plan: ExecutionPlan<'_>,
-    region: &Option<String>,
+    region: Option<String>,
     ci: f64,
     db: DatabaseConnection,
 ) -> anyhow::Result<()> {

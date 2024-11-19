@@ -3,7 +3,7 @@ use anyhow::{self, Context};
 use sea_orm::*;
 
 pub async fn fetch_within(
-    run_id: &str,
+    run_id: i32,
     from: i64,
     to: Option<i64>,
     db: &DatabaseConnection,
@@ -45,7 +45,7 @@ mod tests {
         .await?;
 
         let metrics =
-            dao::metrics::fetch_within("1", 1717507600000, Some(1717507600200), &db).await?;
+            dao::metrics::fetch_within(1, 1717507600000, Some(1717507600200), &db).await?;
 
         assert_eq!(metrics.len(), 4);
 

@@ -69,7 +69,7 @@ pub struct ProcessData {
 
 #[derive(Debug, Serialize)]
 pub struct RunData {
-    pub run_id: String,
+    pub run_id: i32,
     pub region: Option<String>,
     pub ci: f64,
     pub start_time: i64,

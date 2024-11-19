@@ -4,12 +4,11 @@ use crate::{
     metrics_logger,
 };
 use chrono::Utc;
-use nanoid::nanoid;
 use sea_orm::*;
 
 pub async fn run_live<'a>(
     cpu_id: i32,
-    region: &Option<String>,
+    region: Option<String>,
     ci: f64,
     processes_to_observe: Vec<ProcessToObserve>,
     db: DatabaseConnection,
@@ -17,9 +16,8 @@ pub async fn run_live<'a>(
     let start_time = Utc::now().timestamp_millis();
 
     // create a new run
-    let guid = nanoid!(5, &nanoid::alphabet::SAFE);
     let active_run = run::ActiveModel {
-        id: ActiveValue::Set(guid),
+        id: ActiveValue::NotSet,
         is_live: ActiveValue::Set(true),
         cpu_id: ActiveValue::Set(cpu_id),
         region: ActiveValue::Set(region.clone()),
@@ -27,9 +25,8 @@ pub async fn run_live<'a>(
         start_time: ActiveValue::Set(start_time),
         stop_time: ActiveValue::set(None),
     }
-    .insert(&db)
-    .await?
-    .into_active_model();
+    .save(&db)
+    .await?;
 
     // get the new run id
     let run_id = active_run.clone().try_into_model()?.id;
@@ -38,7 +35,7 @@ pub async fn run_live<'a>(
     let start = Utc::now().timestamp_millis();
     let iteration = iteration::ActiveModel {
         id: ActiveValue::NotSet,
-        run_id: ActiveValue::Set(run_id.clone()),
+        run_id: ActiveValue::Set(run_id),
         scenario_name: ActiveValue::Set("live".to_string()),
         count: ActiveValue::Set(1),
         start_time: ActiveValue::Set(start),

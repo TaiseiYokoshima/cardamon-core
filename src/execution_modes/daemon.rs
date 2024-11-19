@@ -1,8 +1,8 @@
 use crate::{
-    data::dataset::{Dataset, ScenarioRunDataset},
+    data::{dataset::LiveDataFilter, dataset_builder::DatasetBuilder},
     entities,
     execution_plan::ProcessToObserve,
-    metrics_logger,
+    metrics_logger::{self, StopHandle},
     models::rab_model,
     server::{
         errors::ServerError,
@@ -17,233 +17,279 @@ use axum::{
 };
 use chrono::Utc;
 use colored::Colorize;
+use http::{HeaderValue, Method};
 use itertools::*;
 use sea_orm::*;
-use serde::{self, Deserialize};
-use tokio::sync::mpsc;
-
-#[derive(Clone)]
-struct ServerState {
-    tx: mpsc::Sender<Signal>,
-    db: DatabaseConnection,
-}
-
-enum Signal {
-    Start {
-        run_id: String,
-        resp_tx: mpsc::Sender<Result<(), ServerError>>,
-    },
-    Stop {
-        resp_tx: mpsc::Sender<Result<Dataset, ServerError>>,
-    },
-}
+use serde::Deserialize;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tower_http::cors::CorsLayer;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StartParams {
-    pub run_id: String,
+struct StartParams {
+    scenario_name: String,
+    run_id: Option<i32>,
+}
+
+enum RunState {
+    WAITING,
+    RUNNING,
+}
+
+#[derive(Clone)]
+struct DaemonState {
+    pub is_composer: bool,
+    pub cpu_id: i32,
+    pub region: Option<String>,
+    pub ci: f64,
+    pub processes_to_observe: Vec<ProcessToObserve>,
+    pub db: DatabaseConnection,
+
+    // mutable state
+    pub scenario_name: Arc<Mutex<String>>,
+    pub run_id: Arc<Mutex<i32>>,
+    pub run_state: Arc<Mutex<RunState>>,
+    pub stop_handle: Arc<Mutex<StopHandle>>,
+}
+
+async fn create_new_run(
+    cpu_id: i32,
+    region: Option<String>,
+    ci: f64,
+    start_time: i64,
+    db: &DatabaseConnection,
+) -> anyhow::Result<entities::run::ActiveModel> {
+    entities::run::ActiveModel {
+        id: ActiveValue::NotSet,
+        is_live: ActiveValue::Set(true),
+        cpu_id: ActiveValue::Set(cpu_id),
+        region: ActiveValue::Set(region.clone()),
+        carbon_intensity: ActiveValue::Set(ci),
+        start_time: ActiveValue::Set(start_time),
+        stop_time: ActiveValue::set(None),
+    }
+    .save(db)
+    .await
+    .map_err(anyhow::Error::from)
+}
+
+async fn create_new_iteration(
+    run_id: i32,
+    scenario_name: String,
+    start_time: i64,
+    db: &DatabaseConnection,
+) -> anyhow::Result<entities::iteration::ActiveModel> {
+    entities::iteration::ActiveModel {
+        id: ActiveValue::NotSet,
+        run_id: ActiveValue::Set(run_id),
+        scenario_name: ActiveValue::Set(scenario_name),
+        count: ActiveValue::Set(1),
+        start_time: ActiveValue::Set(start_time),
+        stop_time: ActiveValue::Set(None), // same as start for now, will be updated later
+    }
+    .save(db)
+    .await
+    .map_err(anyhow::Error::from)
+}
+
+async fn update_stop_times(
+    run_id: i32,
+    stop_time: i64,
+    db: &DatabaseConnection,
+) -> anyhow::Result<()> {
+    // update run
+    let mut run = entities::run::Entity::find_by_id(run_id)
+        .one(db)
+        .await?
+        .context(format!("Expected to find a run with id {}", run_id))?
+        .into_active_model();
+
+    run.stop_time = ActiveValue::Set(Some(stop_time));
+    run.save(db).await?;
+
+    // update iterations
+    let mut iterations = entities::iteration::Entity
+        .select()
+        .filter(Condition::all().add(entities::iteration::Column::RunId.eq(run_id)))
+        .all(db)
+        .await?;
+    for iteration in iterations.iter_mut() {
+        let mut active_model = iteration.clone().into_active_model();
+        active_model.stop_time = ActiveValue::Set(Some(stop_time));
+        active_model.save(db).await?;
+    }
+
+    Ok(())
 }
 
 async fn start(
-    State(state): State<ServerState>,
+    State(state): State<DaemonState>,
     Query(params): Query<StartParams>,
 ) -> Result<(), ServerError> {
-    println!("start received {}", params.run_id);
-    let (resp_tx, mut resp_rx) = mpsc::channel::<Result<(), ServerError>>(1);
-    state
-        .tx
-        .send(Signal::Start {
-            run_id: params.run_id,
-            resp_tx,
-        })
-        .await
-        .context("Failed to send start signal")?;
+    println!("> start signal received");
 
-    resp_rx
-        .recv()
-        .await
-        .unwrap_or(Err(ServerError(anyhow::anyhow!(
-            "Error receiving response to start signal"
-        ))))
+    // check running state
+    let run_state_clone = Arc::clone(&state.run_state);
+    let mut run_state_mut = run_state_clone.lock().await;
+    match *run_state_mut {
+        RunState::WAITING => {
+            // store the "scenario name" in global state
+            let scenario_name_clone = Arc::clone(&state.scenario_name);
+            let mut scenario_name_mut = scenario_name_clone.lock().await;
+            *scenario_name_mut = params.scenario_name.clone();
+
+            // get the "run id"
+            let run_id = if state.is_composer {
+                // create a new scenario, run and iteration
+                let start_time = Utc::now().timestamp_millis();
+                let mut run =
+                    create_new_run(state.cpu_id, state.region, state.ci, start_time, &state.db)
+                        .await?;
+                let run_id = run.id.take().context("")?;
+                create_new_iteration(run_id, params.scenario_name, start_time, &state.db).await?;
+                run_id
+            } else {
+                params.run_id.context(
+                    "Daemon running as worker expects run_id to be provided by the composer",
+                )?
+            };
+
+            // store the "run id" in global state
+            let run_id_clone = Arc::clone(&state.run_id);
+            let mut run_id_mut = run_id_clone.lock().await;
+            *run_id_mut = run_id;
+
+            // start metric logger
+            let stop_handle = metrics_logger::start_logging(
+                state.processes_to_observe.clone(),
+                run_id,
+                state.db.clone(),
+            )?;
+            println!("> collecting data for run {}", run_id);
+
+            // update run state
+            *run_state_mut = RunState::RUNNING;
+
+            // store the "stop handle" in global state
+            let stop_handle_clone = Arc::clone(&state.stop_handle);
+            let mut stop_handle_mut = stop_handle_clone.lock().await;
+            *stop_handle_mut = stop_handle;
+
+            Ok(())
+        }
+        _ => {
+            // return error
+            Err(ServerError(anyhow::anyhow!("Daemon is already running!")))
+        }
+    }
 }
 
-async fn stop(State(state): State<ServerState>) -> Result<Json<RunResponse>, ServerError> {
-    println!("stop received");
-    let (resp_tx, mut resp_rx) = mpsc::channel::<Result<Dataset, ServerError>>(1);
-    state
-        .tx
-        .send(Signal::Stop { resp_tx })
-        .await
-        .context("Failed to send stop signal")?;
+async fn stop(State(state): State<DaemonState>) -> Result<Json<Option<RunResponse>>, ServerError> {
+    println!("> stop signal received");
 
-    let dataset = resp_rx
-        .recv()
-        .await
-        .unwrap_or(Err(ServerError(anyhow::anyhow!(
-            "Error receiving response to stop signal"
-        ))))?;
+    // check running state
+    let run_state_clone = Arc::clone(&state.run_state);
+    let mut run_state_mut = run_state_clone.lock().await;
+    match *run_state_mut {
+        RunState::RUNNING => {
+            // stop recording!
+            let stop_handle_clone = Arc::clone(&state.stop_handle);
+            let mut stop_handle_mut = stop_handle_clone.lock().await;
+            stop_handle_mut.stop().await;
 
-    let scenario_datasets = dataset.by_scenario(crate::data::dataset::LiveDataFilter::OnlyLive);
-    let scenario_dataset = scenario_datasets
-        .first()
-        .context("Expected at least one scenario")?;
+            // update run state
+            *run_state_mut = RunState::WAITING;
 
-    let scenario_run_datasets = scenario_dataset.by_run();
-    let scenario_run_dataset = scenario_run_datasets
-        .first()
-        .context("Expected at least one run")?;
+            if state.is_composer {
+                // build a dataset for the run
+                let scenario_name_clone = Arc::clone(&state.scenario_name);
+                let scenario_name = scenario_name_clone.lock().await.clone();
 
-    let model_data = scenario_run_dataset
-        .apply_model(&state.db, &rab_model)
-        .await?;
+                let run_id_clone = Arc::clone(&state.run_id);
+                let run_id = run_id_clone.lock().await;
 
-    let processes = model_data
-        .process_data
-        .iter()
-        .map(|data| ProcessResponse {
-            process_name: data.process_id.clone(),
-            pow_contrib_perc: data.pow_perc,
-            iteration_metrics: data.iteration_metrics.clone(),
-        })
-        .collect_vec();
+                // update "stop time" for run and iteration
+                let stop_time = Utc::now().timestamp_millis();
+                update_stop_times(*run_id, stop_time, &state.db).await?;
 
-    Ok(Json(RunResponse {
-        region: model_data.region.clone(),
-        start_time: model_data.start_time,
-        duration: model_data.duration(),
-        pow: model_data.data.pow,
-        co2: model_data.data.co2,
-        ci: model_data.ci,
-        processes,
-    }))
+                // build dataset
+                let dataset = DatasetBuilder::new()
+                    .scenario(&*scenario_name)
+                    .all()
+                    .run(*run_id)
+                    .all()
+                    .build(&state.db)
+                    .await?;
+
+                let scenario_datasets = dataset.by_scenario(LiveDataFilter::IncludeLive);
+                let scenario_dataset = scenario_datasets.first().context("")?;
+
+                let run_datasets = scenario_dataset.by_run();
+                let run_dataset = run_datasets.first().context("")?;
+
+                let model_data = run_dataset.apply_model(&state.db, &rab_model).await?;
+                let processes = model_data
+                    .process_data
+                    .iter()
+                    .map(|data| ProcessResponse {
+                        process_name: data.process_id.clone(),
+                        pow_contrib_perc: data.pow_perc,
+                        iteration_metrics: data.iteration_metrics.clone(),
+                    })
+                    .collect_vec();
+
+                // let json_str = serde_json::to_string_pretty(&processes);
+                // println!("processes json\n{:?}", json_str);
+
+                let run_resp = RunResponse {
+                    region: model_data.region.clone(),
+                    start_time: model_data.start_time,
+                    duration: model_data.duration(),
+                    pow: model_data.data.pow,
+                    co2: model_data.data.co2,
+                    ci: model_data.ci,
+                    processes,
+                };
+
+                Ok(Json(Some(run_resp)))
+            } else {
+                Ok(Json(None))
+            }
+        }
+
+        RunState::WAITING => Err(ServerError(anyhow::anyhow!("Daemon is not running"))),
+    }
 }
 
 pub async fn run_daemon(
     cpu_id: i32,
-    region: &Option<String>,
+    region: Option<String>,
     ci: f64,
     processes_to_observe: Vec<ProcessToObserve>,
     db: DatabaseConnection,
 ) -> anyhow::Result<()> {
-    let (tx, mut rx) = mpsc::channel::<Signal>(10);
-
-    let region = region.clone();
-    let db_clone = db.clone();
-
-    tokio::spawn(async move {
-        loop {
-            let mut run_id: String = "".to_string();
-            let mut start_resp_tx: mpsc::Sender<Result<(), ServerError>>;
-
-            // wait for signal to start recording
-            // TODO: what if multiple "start" signals are sent? This needs more thought!
-            while let Some(signal) = rx.recv().await {
-                if let Signal::Start {
-                    run_id: id,
-                    resp_tx,
-                } = signal
-                {
-                    // TODO: do a check to see if the run id already exists
-                    //       if it does then reject this signal with an err
-                    run_id = id.clone();
-                    start_resp_tx = resp_tx;
-                    println!("> starting run {}", id.clone());
-                    break;
-                }
-            }
-
-            let start_time = Utc::now().timestamp_millis();
-
-            // upsert run
-            let txn = db.begin().await.unwrap();
-            let active_run = match entities::run::Entity::find_by_id(&run_id).one(&txn).await {
-                Ok(active_run) => active_run,
-                Err(err) => {
-                    start_resp_tx.send(Err(ServerError(anyhow::anyhow!(""))));
-                    break;
-                }
-            };
-
-            let mut active_run = if active_run.is_none() {
-                entities::run::ActiveModel {
-                    id: ActiveValue::Set(run_id.clone()),
-                    is_live: ActiveValue::Set(true),
-                    cpu_id: ActiveValue::Set(cpu_id),
-                    region: ActiveValue::Set(region.clone()),
-                    carbon_intensity: ActiveValue::Set(ci),
-                    start_time: ActiveValue::Set(start_time),
-                    stop_time: ActiveValue::set(None),
-                }
-                .insert(&txn)
-                .await
-                .unwrap()
-                .into_active_model()
-            } else {
-                // this unwrap is safe
-                active_run.unwrap().into_active_model()
-            };
-
-            // upsert iteration
-            let active_iteration = entities::iteration::Entity
-                .select()
-                .filter(entities::iteration::Column::RunId.eq(&run_id))
-                .one(&txn)
-                .await
-                .unwrap();
-            let mut active_iteration = if active_iteration.is_none() {
-                entities::iteration::ActiveModel {
-                    id: ActiveValue::NotSet,
-                    run_id: ActiveValue::Set(run_id.clone()),
-                    scenario_name: ActiveValue::Set("live".to_string()),
-                    count: ActiveValue::Set(1),
-                    start_time: ActiveValue::Set(start_time),
-                    stop_time: ActiveValue::Set(None), // same as start for now, will be updated later
-                }
-                .save(&txn)
-                .await
-                .unwrap()
-            } else {
-                active_iteration.unwrap().into_active_model()
-            };
-
-            txn.commit().await.unwrap();
-
-            // start metric logger
-            let stop_handle = metrics_logger::start_logging(
-                processes_to_observe.clone(),
-                run_id.clone(),
-                db.clone(),
-            )
-            .unwrap(); // TODO: remove unwrap!
-
-            // wait until stop signal is received
-            while let Some(signal) = rx.recv().await {
-                if let Signal::Stop { resp_tx } = signal {
-                    println!("Stopping!");
-                    break;
-                }
-            }
-
-            stop_handle.stop().await;
-
-            // update the iteration stop time
-            let now = Utc::now().timestamp_millis();
-            active_iteration.stop_time = ActiveValue::Set(Some(now));
-            active_iteration.update(&db).await.unwrap();
-
-            // update the run stop time
-            active_run.stop_time = ActiveValue::Set(Some(now));
-            active_run.clone().update(&db).await.unwrap(); // TODO: remove unwrap!
-        }
-    });
-
     // start signal server
     let app = Router::new()
         .route("/start", get(start))
         .route("/stop", get(stop))
-        .with_state(ServerState {
-            tx: tx.clone(),
-            db: db_clone,
+        .layer(
+            CorsLayer::new()
+                .allow_origin("*".parse::<HeaderValue>().unwrap())
+                .allow_methods([Method::GET]),
+        )
+        .with_state(DaemonState {
+            is_composer: true,
+            cpu_id,
+            region,
+            ci,
+            processes_to_observe,
+            db,
+
+            scenario_name: Arc::new(Mutex::new(String::default())),
+            run_id: Arc::new(Mutex::new(i32::default())),
+            run_state: Arc::new(Mutex::new(RunState::WAITING)),
+            stop_handle: Arc::new(Mutex::new(StopHandle::default())),
         });
 
     // Start the Axum server

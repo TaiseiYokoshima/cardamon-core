@@ -16,9 +16,12 @@ impl StopHandle {
         Self { token, join_set }
     }
 
-    pub async fn stop(mut self) {
+    pub async fn stop(&mut self) {
         // cancel loggers
         self.token.cancel();
+
+        // let join_set_clone = Arc::clone(&self.join_set);
+        // let mut join_set = join_set_clone.lock().await;
         loop {
             if self.join_set.join_next().await.is_none() {
                 break;
@@ -27,9 +30,18 @@ impl StopHandle {
     }
 }
 
+impl Default for StopHandle {
+    fn default() -> Self {
+        Self {
+            token: CancellationToken::new(),
+            join_set: JoinSet::new(),
+        }
+    }
+}
+
 async fn keep_saving(
     queue_rx: &mut mpsc::Receiver<CpuMetrics>,
-    run_id: &str,
+    run_id: i32,
     db: &DatabaseConnection,
 ) {
     loop {
@@ -53,7 +65,7 @@ async fn keep_saving(
 /// the scenario failed to complete successfully or any of the loggers contained errors.
 pub fn start_logging(
     processes_to_observe: Vec<ProcessToObserve>,
-    run_id: String,
+    run_id: i32,
     db: DatabaseConnection,
 ) -> anyhow::Result<StopHandle> {
     // split processes into bare metal & docker processes
@@ -92,10 +104,10 @@ pub fn start_logging(
         tokio::select! {
             _ = token.cancelled() => {
                 while let Some(metrics) = queue_rx.recv().await {
-                    let _ = metrics.into_active_model(&run_id).save(&db).await;
+                    let _ = metrics.into_active_model(run_id).save(&db).await;
                 }
             }
-            _ = keep_saving(&mut queue_rx, &run_id, &db) => {}
+            _ = keep_saving(&mut queue_rx, run_id, &db) => {}
         }
     });
 

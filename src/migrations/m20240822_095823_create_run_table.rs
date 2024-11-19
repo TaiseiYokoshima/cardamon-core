@@ -57,8 +57,8 @@ impl MigrationTrait for Migration {
                     .if_not_exists()
                     .col(
                         ColumnDef::new(Run::Id)
-                            .string()
-                            .string_len(5)
+                            .integer()
+                            .auto_increment()
                             .not_null()
                             .primary_key(),
                     )

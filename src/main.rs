@@ -234,7 +234,7 @@ async fn main() -> anyhow::Result<()> {
             cleanup_stdout_stderr()?;
 
             // run it!
-            run(execution_plan, &region_code, ci, db_conn).await?;
+            run(execution_plan, region_code, ci, db_conn).await?;
         }
 
         Commands::Stats {

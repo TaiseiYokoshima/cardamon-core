@@ -14,6 +14,70 @@ pub struct RunId {
     pub run_id: i32,
 }
 
+pub async fn fetch_run_one(
+    scenarios: &Vec<String>,
+    run_id: i32,
+    page: Option<Page>,
+    db: &DatabaseConnection,
+) -> anyhow::Result<(Vec<iteration::Model>, Pages)> {
+    if scenarios.is_empty() {
+        return Err(anyhow::anyhow!("Cannot get runs for no scenarios!"));
+    }
+    trace!("page = {:?}", page);
+
+    match page {
+        Some(Page { size, num }) => {
+            if scenarios.len() > 1 {
+                return Err(anyhow::anyhow!(
+                    "Unable to paginate over runs if multiple scenarios are selected!"
+                ));
+            }
+
+            let count = 1;
+            let page_count = (count as f64 / size as f64).ceil() as u64;
+            trace!("count = {}", count);
+
+            // get data
+            let sub_query = Query::select()
+                .column(iteration::Column::RunId)
+                .distinct()
+                .from(iteration::Entity)
+                .cond_where(iteration::Column::RunId.eq(run_id))
+                .order_by(iteration::Column::StartTime, Order::Desc)
+                .limit(size)
+                .offset(size * num)
+                .to_owned();
+            let query = iteration::Entity::find()
+                .filter(iteration::Column::ScenarioName.is_in(scenarios))
+                .filter(iteration::Column::RunId.in_subquery(sub_query))
+                .order_by_desc(iteration::Column::StartTime);
+
+            let res = query.all(db).await?;
+
+            Ok((res, Pages::Required(page_count)))
+        }
+
+        None => {
+            let sub_query = Query::select()
+                .column(iteration::Column::RunId)
+                .distinct()
+                .from(iteration::Entity)
+                .cond_where(iteration::Column::RunId.eq(run_id))
+                .order_by(iteration::Column::StartTime, Order::Desc)
+                .to_owned();
+            let query = iteration::Entity::find()
+                .filter(iteration::Column::ScenarioName.is_in(scenarios))
+                .filter(iteration::Column::RunId.in_subquery(sub_query))
+                .order_by_desc(iteration::Column::StartTime);
+
+            // println!("\n [QUERY] {:?}", query.build(DatabaseBackend::Sqlite).sql);
+
+            let res = query.all(db).await?;
+            Ok((res, Pages::NotRequired))
+        }
+    }
+}
+
 // VERIFIED (NoPage)
 pub async fn fetch_runs_all(
     scenarios: &Vec<String>,
@@ -283,6 +347,12 @@ mod tests {
     use crate::{dao, db_connect, db_migrate, tests::setup_fixtures};
 
     #[tokio::test]
+    async fn fetch_iterations_of_run_id() -> anyhow::Result<()> {
+        // TODO: Test fetch_run_one()
+        panic!()
+    }
+
+    #[tokio::test]
     async fn fetch_iterations_of_last_n_runs_for_schema() -> anyhow::Result<()> {
         let db = db_connect("sqlite::memory:", None).await?;
         db_migrate(&db).await?;
@@ -306,7 +376,7 @@ mod tests {
             .iter()
             .map(|run| run.run_id.clone())
             .collect::<Vec<_>>();
-        assert_eq!(run_ids, vec!["1"]);
+        assert_eq!(run_ids, vec![1]);
 
         let iterations = scenario_iterations
             .iter()
@@ -323,7 +393,7 @@ mod tests {
             .iter()
             .map(|run| run.run_id.clone())
             .collect::<Vec<_>>();
-        assert_eq!(run_ids, vec!["3", "3", "3", "2", "2", "2"]);
+        assert_eq!(run_ids, vec![3, 3, 3, 2, 2, 2]);
 
         let iterations = scenario_iterations
             .iter()
