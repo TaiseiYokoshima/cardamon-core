@@ -46,7 +46,6 @@ async fn keep_saving(
 ) {
     loop {
         if let Some(metrics) = queue_rx.recv().await {
-            println!("{:?}", metrics);
             let _ = metrics.into_active_model(run_id).save(db).await;
         }
         let _ = tokio::time::sleep(Duration::from_secs(2));

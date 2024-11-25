@@ -1,9 +1,11 @@
 use crate::{
     data::{dataset::LiveDataFilter, dataset_builder::DatasetBuilder},
     entities,
+    execution_modes::finalise_run,
     execution_plan::ProcessToObserve,
     metrics_logger::{self, StopHandle},
     models::rab_model,
+    process_control::shutdown_processes,
     server::{
         errors::ServerError,
         routes::{ProcessResponse, RunResponse},
@@ -21,7 +23,7 @@ use http::{HeaderValue, Method};
 use itertools::*;
 use sea_orm::*;
 use serde::Deserialize;
-use std::sync::Arc;
+use std::{error::Error, process::exit, sync::Arc};
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 
@@ -91,36 +93,6 @@ async fn create_new_iteration(
     .save(db)
     .await
     .map_err(anyhow::Error::from)
-}
-
-async fn update_stop_times(
-    run_id: i32,
-    stop_time: i64,
-    db: &DatabaseConnection,
-) -> anyhow::Result<()> {
-    // update run
-    let mut run = entities::run::Entity::find_by_id(run_id)
-        .one(db)
-        .await?
-        .context(format!("Expected to find a run with id {}", run_id))?
-        .into_active_model();
-
-    run.stop_time = ActiveValue::Set(Some(stop_time));
-    run.save(db).await?;
-
-    // update iterations
-    let mut iterations = entities::iteration::Entity
-        .select()
-        .filter(Condition::all().add(entities::iteration::Column::RunId.eq(run_id)))
-        .all(db)
-        .await?;
-    for iteration in iterations.iter_mut() {
-        let mut active_model = iteration.clone().into_active_model();
-        active_model.stop_time = ActiveValue::Set(Some(stop_time));
-        active_model.save(db).await?;
-    }
-
-    Ok(())
 }
 
 async fn start(
@@ -211,7 +183,7 @@ async fn stop(State(state): State<DaemonState>) -> Result<Json<Option<RunRespons
 
                 // update "stop time" for run and iteration
                 let stop_time = Utc::now().timestamp_millis();
-                update_stop_times(*run_id, stop_time, &state.db).await?;
+                finalise_run(*run_id, stop_time, &state.db).await?;
 
                 // build dataset
                 let dataset = DatasetBuilder::new()
@@ -269,6 +241,17 @@ pub async fn run_daemon(
     processes_to_observe: Vec<ProcessToObserve>,
     db: DatabaseConnection,
 ) -> anyhow::Result<()> {
+    // gracefully handle ctrl-c
+    let processes = processes_to_observe.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen for Ctrl-C");
+
+        shutdown_processes(&processes).expect("To shutdown processes");
+        exit(0);
+    });
+
     // start signal server
     let app = Router::new()
         .route("/start", get(start))

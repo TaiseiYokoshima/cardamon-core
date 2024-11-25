@@ -1,10 +1,13 @@
+use super::finalise_run;
 use crate::{
     entities::{iteration, run},
     execution_plan::ProcessToObserve,
     metrics_logger,
+    process_control::shutdown_processes,
 };
 use chrono::Utc;
 use sea_orm::*;
+use std::{error::Error, process::exit};
 
 pub async fn run_live<'a>(
     cpu_id: i32,
@@ -42,6 +45,23 @@ pub async fn run_live<'a>(
         stop_time: ActiveValue::Set(None),
     };
     iteration.save(&db).await?;
+
+    // gracefully handle ctrl-c
+    let db_clone = db.clone();
+    let processes = processes_to_observe.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen for Ctrl-C");
+
+        shutdown_processes(&processes).expect("To shutdown processes");
+
+        // finalise run
+        let stop_time = Utc::now().timestamp_millis();
+        finalise_run(run_id, stop_time, &db_clone).await.expect("");
+
+        exit(0);
+    });
 
     // start the metrics logger
     let mut stop_handle =

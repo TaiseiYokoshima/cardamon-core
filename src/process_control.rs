@@ -260,6 +260,7 @@ mod tests {
                 up: "sleep 15".to_string(),
                 down: None,
                 redirect: Some(Redirect::Null),
+                deps: vec![],
                 process_type: ProcessType::BareMetal,
             };
             let proc_to_observe = run_process(&proc)?;

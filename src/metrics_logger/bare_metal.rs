@@ -48,7 +48,6 @@ pub async fn keep_logging(
                 } => {
                     if let Ok(mut metrics) = get_metrics(&mut system, *pid).await {
                         metrics.process_name = process_name.clone();
-                        println!("{:?}", metrics);
                         if let Err(err) = queue.send(metrics).await {
                             warn!("{}", err);
                         }

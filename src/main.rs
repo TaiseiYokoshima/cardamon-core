@@ -253,7 +253,8 @@ async fn main() -> anyhow::Result<()> {
             };
             let dataset = dataset_cols.build(&db_conn).await?;
 
-            println!("\n{}", " Cardamon Stats \n".reversed().green());
+            println!("\n{}", " Cardamon Stats ".reversed().green());
+            println!();
             if dataset.is_empty() {
                 println!("\nno data found!");
             }

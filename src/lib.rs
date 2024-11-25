@@ -20,11 +20,12 @@ use crate::{
 };
 use anyhow::Context;
 use colored::Colorize;
-use config::Power;
+use config::{Power, Process};
 use entities::cpu;
 use execution_modes::daemon::run_daemon;
 use sea_orm::*;
 use std::{
+    collections::HashMap,
     fs::{self},
     io::Write,
     path::Path,
@@ -93,6 +94,67 @@ pub fn cleanup_stdout_stderr() -> anyhow::Result<()> {
         fs::remove_file(stderr)?;
     }
     Ok(())
+}
+
+pub fn topological_sort(graph: &mut HashMap<String, Vec<String>>) -> anyhow::Result<Vec<String>> {
+    // verify all the processes exist
+    for (proc_name, deps) in graph.iter() {
+        let exists = deps.iter().all(|dep| graph.contains_key(dep));
+        if !exists {
+            return Err(anyhow::anyhow!(
+                "Process {} depends on another process which doesn't exist",
+                proc_name
+            ));
+        }
+    }
+
+    let mut sorted: Vec<String> = vec![];
+    while graph.len() > 0 {
+        // find processes without deps
+        let roots = graph
+            .iter()
+            .filter(|(_, deps)| deps.is_empty())
+            .map(|(proc_name, _)| (*proc_name).clone())
+            .collect::<Vec<_>>();
+
+        // if roots is empty then the graph must contain cycles
+        if roots.is_empty() {
+            return Err(anyhow::anyhow!("Process graph contains a cycle"));
+        }
+
+        // add roots to the sorted list
+        sorted.extend(roots.clone());
+
+        // remove roots from graph
+        for root in roots {
+            graph.remove(&root);
+            for (_, deps) in graph.iter_mut() {
+                if let Some(pos) = deps.iter().position(|dep| dep == &root) {
+                    deps.remove(pos);
+                }
+            }
+        }
+    }
+
+    Ok(sorted)
+}
+
+pub fn topological_sort_processes(procs: Vec<Process>) -> anyhow::Result<Vec<String>> {
+    let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+    for proc in procs {
+        if graph.contains_key(&proc.name) {
+            return Err(anyhow::anyhow!("Duplicate process named {}", &proc.name));
+        }
+
+        for dep in proc.deps.iter() {
+            graph
+                .entry(proc.name.clone())
+                .or_insert_with(Vec::new)
+                .push(dep.clone());
+        }
+    }
+
+    topological_sort(&mut graph)
 }
 
 pub async fn run(
@@ -172,14 +234,6 @@ pub async fn run(
         }
     };
 
-    // gracefully shutdown upon ctrl-c
-    let processes_to_shutdown = processes_to_observe.clone();
-    ctrlc::set_handler(move || {
-        println!();
-        shutdown_processes(&processes_to_shutdown).expect("Error shutting down managed processes");
-        exit(0)
-    })?;
-
     match exec_plan.execution_mode {
         ExecutionMode::Observation(scenarios) => {
             run_scenarios(
@@ -217,6 +271,44 @@ pub mod tests {
                 .await
                 .context(format!("Error applying fixture {:?}", path))?;
         }
+
+        Ok(())
+    }
+
+    #[test]
+    pub fn topological_sort_works() -> anyhow::Result<()> {
+        let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+        graph.insert("A".to_string(), vec!["B".to_string(), "C".to_string()]);
+        graph.insert("B".to_string(), vec!["C".to_string()]);
+        graph.insert("C".to_string(), vec![]);
+
+        let sorted = topological_sort(&mut graph)?;
+        assert_eq!(
+            sorted,
+            vec!["C".to_string(), "B".to_string(), "A".to_string()]
+        );
+
+        let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+        graph.insert("A".to_string(), vec!["B".to_string()]);
+        graph.insert("B".to_string(), vec!["C".to_string()]);
+        graph.insert("C".to_string(), vec!["B".to_string()]);
+
+        let sorted = topological_sort(&mut graph);
+        assert!(sorted.is_err());
+
+        let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+        graph.insert("A".to_string(), vec!["B".to_string(), "C".to_string()]);
+        graph.insert("B".to_string(), vec![]);
+        graph.insert("C".to_string(), vec!["D".to_string(), "E".to_string()]);
+        graph.insert("D".to_string(), vec!["F".to_string()]);
+        graph.insert("E".to_string(), vec![]);
+        graph.insert("F".to_string(), vec![]);
+
+        let mut sorted = topological_sort(&mut graph)?;
+        let (first, last) = sorted.split_at_mut(3);
+        first.sort();
+        assert_eq!(first, ["B".to_string(), "E".to_string(), "F".to_string()]);
+        assert_eq!(last, ["D".to_string(), "C".to_string(), "A".to_string()]);
 
         Ok(())
     }

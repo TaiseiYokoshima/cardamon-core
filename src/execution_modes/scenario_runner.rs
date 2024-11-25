@@ -1,3 +1,5 @@
+use std::{error::Error, process::exit};
+
 use crate::{
     config::Scenario,
     data::{dataset::LiveDataFilter, dataset_builder::DatasetBuilder, Data},
@@ -11,7 +13,7 @@ use anyhow::{anyhow, Context};
 use chrono::Utc;
 use colored::*;
 use itertools::*;
-use sea_orm::{ActiveModelTrait, ActiveValue, DatabaseConnection};
+use sea_orm::*;
 use term_table::{row, row::Row, rows, table_cell::*, Table, TableStyle};
 use tracing::info;
 
@@ -72,6 +74,17 @@ pub async fn run_scenarios<'a>(
     processes_to_observe: Vec<ProcessToObserve>,
     db: DatabaseConnection,
 ) -> anyhow::Result<()> {
+    // gracefully handle ctrl-c
+    let processes = processes_to_observe.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen for Ctrl-C");
+
+        shutdown_processes(&processes).expect("To shutdown processes");
+        exit(0);
+    });
+
     let start_time = Utc::now().timestamp_millis();
 
     // create a new run
@@ -88,7 +101,7 @@ pub async fn run_scenarios<'a>(
     .await?;
 
     // get the new run id
-    let run_id = active_run.id.take().context("Expecting a new run id")?;
+    let run_id = active_run.clone().try_into_model()?.id;
 
     // ---- for each scenario ----
     for scenario in scenarios {
@@ -102,11 +115,8 @@ pub async fn run_scenarios<'a>(
             );
 
             // start the metrics loggers
-            let mut stop_handle = metrics_logger::start_logging(
-                processes_to_observe.clone(),
-                run_id.clone(),
-                db.clone(),
-            )?;
+            let mut stop_handle =
+                metrics_logger::start_logging(processes_to_observe.clone(), run_id, db.clone())?;
 
             // run the scenario
             let scenario_iteration = run_scenario(run_id, &scenario, iteration).await?;
@@ -122,7 +132,7 @@ pub async fn run_scenarios<'a>(
 
     // update run with the stop time
     active_run.stop_time = ActiveValue::Set(Some(stop_time));
-    active_run.save(&db).await?;
+    active_run.update(&db).await?;
 
     // stop the application
     shutdown_processes(&processes_to_observe)?;

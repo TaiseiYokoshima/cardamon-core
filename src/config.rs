@@ -164,6 +164,8 @@ pub struct Process {
     pub up: String,
     pub down: Option<String>,
     pub redirect: Option<Redirect>,
+    #[serde(default)]
+    pub deps: Vec<String>,
     #[serde(rename = "process")]
     pub process_type: ProcessType,
 }
