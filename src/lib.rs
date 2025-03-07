@@ -567,10 +567,18 @@ pub async fn run<'a>(
 ) -> anyhow::Result<DatasetRows> {
     let mut processes_to_observe = exec_plan.external_processes_to_observe.unwrap_or(vec![]); // external procs to observe are cloned here.
 
+    // Set as minimum grace period, keeping it to stay backwards compatibile
+    let mut max_grace_millis = 2000_u64;
     // run the application if there is anything to run
     if !exec_plan.processes_to_execute.is_empty() {
         for proc in exec_plan.processes_to_execute {
             print!("> starting process {}", proc.name.green());
+            if let Some(startup_grace) = proc.startup_grace {
+                let millis = startup_grace.as_millis() as u64;
+                if millis > max_grace_millis {
+                    max_grace_millis = millis;
+                }
+            }
 
             let process_to_observe = run_process(proc)?;
 
@@ -581,9 +589,9 @@ pub async fn run<'a>(
         }
     }
 
-    print!("> waiting for application to settle");
+    print!("> waiting for application to settle: {}ms",max_grace_millis);
     std::io::stdout().flush()?;
-    tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(max_grace_millis)).await;
     println!(" {}", "\t✓".green());
 
     let start_time = Utc::now().timestamp_millis();
@@ -810,6 +818,7 @@ pub mod tests {
                 down: None,
                 redirect: Some(Redirect::Null),
                 process_type: ProcessType::BareMetal,
+                startup_grace: None,
             };
             let proc_to_observe = run_process(&proc)?;
 
@@ -843,6 +852,7 @@ pub mod tests {
                 down: None,
                 redirect: Some(Redirect::Null),
                 process_type: ProcessType::BareMetal,
+                startup_grace: None,
             };
             let procs_to_observe = run_process(&proc)?;
             let stop_handle = metrics_logger::start_logging(vec![procs_to_observe])?;

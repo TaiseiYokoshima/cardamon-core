@@ -43,6 +43,7 @@ clap = { version = "4.4.10", features = ["derive"] }
 colored = "2.1.0"
 ctrlc = "3.4.5"
 dotenvy = "0.15.7"
+duration-str = "0.13.0"
 futures-util = "0.3.30"
 http = "1.1.0"
 itertools = "0.13.0"
