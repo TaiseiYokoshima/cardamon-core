@@ -6,6 +6,7 @@ use chrono::Utc;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tracing::{debug, error, warn};
 
 /// Enters an infinite loop logging metrics for each process to the metrics log. This function is
@@ -98,6 +99,7 @@ pub async fn keep_logging(
         // continue;
     }
 
+    let mut last_stats_per_container: HashMap<String, Stats> = HashMap::new();
     loop {
         for container in &containers {
             if let Some(container_id) = container.id.as_ref() {
@@ -113,22 +115,28 @@ pub async fn keep_logging(
                         container_id,
                         Some(StatsOptions {
                             stream: false,
+                            one_shot: true,
                             ..Default::default()
                         }),
                     )
+                    // // .skip(1)
+                    // .take(1)
                     .next()
                     .await;
 
                 match docker_stats {
                     Some(Ok(stats)) => {
-                        let cpu_metrics =
-                            calculate_cpu_metrics(container_id, container_name.to_string(), &stats);
-                        debug!(
-                            "Pushing metrics to metrics log form container name/s {:?}",
-                            container.names
-                        );
-                        metrics_log.lock().unwrap().push_metrics(cpu_metrics);
-                        debug!("Logged metrics for container {}", container_id);
+                        if let Some(previous) = last_stats_per_container.get(container_name) {
+                            let cpu_metrics =
+                            calculate_cpu_metrics(container_id, container_name.to_string(), &stats, &previous);
+                            debug!(
+                                "Pushing metrics to metrics log form container name/s {:?}",
+                                container.names
+                            );
+                            metrics_log.lock().unwrap().push_metrics(cpu_metrics);
+                            debug!("Logged metrics for container {}", container_id);
+                        }
+                        last_stats_per_container.insert(container_name.to_owned(), stats);
                     }
                     Some(Err(e)) => {
                         error!("Error getting stats for container {}: {}", container_id, e);
@@ -144,15 +152,16 @@ pub async fn keep_logging(
                 }
             }
         }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
-fn calculate_cpu_metrics(container_id: &str, container_name: String, stats: &Stats) -> CpuMetrics {
+fn calculate_cpu_metrics(container_id: &str, container_name: String, stats: &Stats, previous_stats: &Stats) -> CpuMetrics {
     let core_count = stats.cpu_stats.online_cpus.unwrap_or(0);
     let cpu_delta =
-        stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage;
+        stats.cpu_stats.cpu_usage.total_usage - previous_stats.cpu_stats.cpu_usage.total_usage;
     let system_delta = stats.cpu_stats.system_cpu_usage.unwrap_or(0)
-        - stats.precpu_stats.system_cpu_usage.unwrap_or(0);
+        - previous_stats.cpu_stats.system_cpu_usage.unwrap_or(0);
     let cpu_usage = if system_delta > 0 {
         (cpu_delta as f64 / system_delta as f64) * core_count as f64
     } else {
