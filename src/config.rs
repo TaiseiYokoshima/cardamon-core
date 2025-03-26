@@ -4,9 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs::{self, File},
-    io::{Read, Write}, time::Duration,
+    io::{Read, Write},
 };
-use duration_str::deserialize_option_duration;
 
 #[cfg(not(windows))]
 static EXAMPLE_CONFIG: &str = include_str!("templates/cardamon.unix.toml");
@@ -216,9 +215,6 @@ pub struct Process {
     pub redirect: Option<Redirect>,
     #[serde(rename = "process")]
     pub process_type: ProcessType,
-    #[serde(deserialize_with = "deserialize_option_duration")]
-    #[serde(default)]
-    pub startup_grace: Option<Duration>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
