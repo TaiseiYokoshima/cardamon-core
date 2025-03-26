@@ -120,7 +120,7 @@ pub async fn keep_logging(
                         }),
                     )
                     // // .skip(1)
-                    // .take(1)
+                    .take(1)
                     .next()
                     .await;
 
@@ -152,7 +152,7 @@ pub async fn keep_logging(
                 }
             }
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(2000)).await;
     }
 }
 
