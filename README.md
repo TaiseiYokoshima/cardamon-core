@@ -223,6 +223,6 @@ Start the UI server.
 
 Cardamon is distributed under the terms of the PolyForm Shield License (Version 1.0).
 
-See [LICENSE](https://www.mozilla.org/en-US/MPL/2.0) for details.
+See [LICENSE](https://polyformproject.org/licenses/shield/1.0.0/) for details.
 
 _Copyright © 2023 Root & Branch ltd_
