@@ -1,6 +1,0 @@
-services:
-  db:
-    image: postgres:13
-    environment:
-      POSTGRES_PASSWORD: example
-    container_name: db

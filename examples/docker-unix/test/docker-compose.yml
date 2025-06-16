@@ -1,8 +1,0 @@
-services:
-  test:
-    image: progrium/stress
-    command: --cpu 1 --timeout 300s
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
