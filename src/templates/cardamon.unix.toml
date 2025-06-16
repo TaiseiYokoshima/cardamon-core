@@ -43,12 +43,12 @@
 #            process e.g. db.stdout.
 #     default: "file"
 #     required - false
-#
+# 
 #   startup_grace:
-#     type - integer
-#     desc - the number of milliseconds Cardamon will wait before running
-#            scenarios
-#     default - 2000 ms
+#     type - string
+#     desc - the duration Cardamon will wait before running scenarios. Remember
+#            to include the duration unit. e.g ms, s etc
+#     default - "2000ms"
 #     required - false
 #
 # EXAMPLE
@@ -60,6 +60,7 @@
 # redirect.to = "file"
 # process.type = "docker"
 # process.containers = ["postgres"]
+# startup_grace = "4000ms"
 
 [[process]]
 name = "test_proc"

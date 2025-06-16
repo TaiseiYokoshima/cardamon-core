@@ -25,7 +25,7 @@ down = "bash -c 'docker stop c1 && docker rm c1'"
 redirect.to = "file"
 process.type = "docker"
 process.containers = ["c1"]
-startup_grace = 8000
+startup_grace = "8000ms"
 
 # Scenarios
 # ########################################

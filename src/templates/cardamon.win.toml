@@ -19,7 +19,7 @@
 #     desc - command to stop the process. In the case of bare-metal processes 
 #            cardamon will pass the PID of the process to this command. You can
 #            use `{pid}` as a placeholder in the command e.g. `kill {pid}`.
-#     default: empty string
+#     default - empty string
 #     required - false
 #   
 #   proccess.type: 
@@ -41,14 +41,14 @@
 #            output, "parent" attaches the processes output to cardamon, "file"
 #            writes stdout and stderr to a file of the same name as this 
 #            process e.g. db.stdout.
-#     default: "file"
+#     default - "file"
 #     required - false
 #
 #   startup_grace:
-#     type - integer
-#     desc - the number of milliseconds Cardamon will wait before running
-#            scenarios
-#     default - 2000 ms
+#     type - string
+#     desc - the duration Cardamon will wait before running scenarios. Remember
+#            to include the duration unit. e.g. ms, s etc
+#     default - "2000ms"
 #     required - false
 #
 # EXAMPLE
@@ -60,6 +60,7 @@
 # redirect.to = "file"
 # process.type = "docker"
 # process.containers = ["postgres"]
+# startup_grace = "4000ms"
 
 [[process]]
 name = "test_proc"
