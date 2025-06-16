@@ -48,6 +48,13 @@ curve = [7.627190097500079,0.07551567953624883,20.45110313049153,-1.526142275974
 #     default: "file"
 #     required - false
 #
+#   startup_grace:
+#     type - integer
+#     desc - the number of milliseconds Cardamon will wait before running
+#            scenarios
+#     default - 2000 ms
+#     required - false
+#
 # EXAMPLE
 # -------
 # [[process]]
@@ -57,6 +64,7 @@ curve = [7.627190097500079,0.07551567953624883,20.45110313049153,-1.526142275974
 # redirect.to = "file"
 # process.type = "docker"
 # process.containers = ["postgres"]
+# startup_grace = 4000
 
 [[process]]
 name = "test_proc"
