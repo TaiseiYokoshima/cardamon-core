@@ -115,6 +115,8 @@ pub async fn fetch_ci(code: &str, date: &DateTime<Utc>) -> anyhow::Result<f64> {
 
 #[cfg(test)]
 mod tests {
+    use chrono::NaiveDate;
+
     use super::*;
 
     #[tokio::test]
@@ -122,6 +124,19 @@ mod tests {
         let now = Utc::now();
         let ci = fetch_ci("GB", &now).await?;
         assert!(ci > 0.0);
+
+        let current_year = now.year();
+
+        // test january
+        let naive_date = NaiveDate::from_ymd_opt(current_year, 1, 1).unwrap();
+        let jan = DateTime::<Utc>::from_naive_utc_and_offset(
+            naive_date.and_hms_opt(0, 0, 0).unwrap(),
+            Utc,
+        );
+        let ci = fetch_ci("FR", &jan).await?;
+        println!("{}", ci);
+        assert!(ci > 0.0);
+
         Ok(())
     }
 
