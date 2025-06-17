@@ -71,7 +71,8 @@ fn ask_for_tdp() -> Power {
 }
 
 fn find_cpu() -> Option<String> {
-    let sys = System::new_with_specifics(RefreshKind::new().with_cpu(CpuRefreshKind::everything()));
+    let sys =
+        System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()));
     sys.cpus().first().map(|cpu| cpu.brand().to_string())
 }
 
@@ -589,7 +590,10 @@ pub async fn run<'a>(
         }
     }
 
-    print!("> waiting for application to settle: {}ms",max_grace_millis);
+    print!(
+        "> waiting for application to settle: {}ms",
+        max_grace_millis
+    );
     std::io::stdout().flush()?;
     tokio::time::sleep(tokio::time::Duration::from_millis(max_grace_millis)).await;
     println!(" {}", "\t✓".green());
