@@ -198,6 +198,12 @@ Start the UI server.
 
 - **\*port**: The port to listen on\*
 
+## Important Notes
+
+- Cardamon collects data every 2 seconds therefore it is not possible to use Cardamon for short lived processes - any process that completes in less than 2 seconds.
+- If you are using Cardamon on Linux or Mac you may have to run Cardamon with `sudo` or add your user to the docker group so that it can be run without `sudo`. You can do this by running this command: `sudo usermod -aG docker $USER`
+
+
 ## FAQ
 
 ### Can I use Cardamon on my own project or at my work?

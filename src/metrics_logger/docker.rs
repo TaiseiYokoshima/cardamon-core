@@ -127,8 +127,12 @@ pub async fn keep_logging(
                 match docker_stats {
                     Some(Ok(stats)) => {
                         if let Some(previous) = last_stats_per_container.get(container_name) {
-                            let cpu_metrics =
-                            calculate_cpu_metrics(container_id, container_name.to_string(), &stats, &previous);
+                            let cpu_metrics = calculate_cpu_metrics(
+                                container_id,
+                                container_name.to_string(),
+                                &stats,
+                                &previous,
+                            );
                             debug!(
                                 "Pushing metrics to metrics log form container name/s {:?}",
                                 container.names
@@ -156,7 +160,12 @@ pub async fn keep_logging(
     }
 }
 
-fn calculate_cpu_metrics(container_id: &str, container_name: String, stats: &Stats, previous_stats: &Stats) -> CpuMetrics {
+fn calculate_cpu_metrics(
+    container_id: &str,
+    container_name: String,
+    stats: &Stats,
+    previous_stats: &Stats,
+) -> CpuMetrics {
     let core_count = stats.cpu_stats.online_cpus.unwrap_or(0);
     let cpu_delta =
         stats.cpu_stats.cpu_usage.total_usage - previous_stats.cpu_stats.cpu_usage.total_usage;
@@ -444,7 +453,7 @@ CMD ["sleep", "infinity"]
         let stop_handle = StopHandle::new(token, join_set, shared_metrics_log);
 
         // Wait for period of time ( to get logs)
-        sleep(time::Duration::new(2, 0)).await;
+        sleep(time::Duration::from_secs(4)).await;
 
         // Stop logging and get metrics_logs from keep_logging()
         let metrics_log = stop_handle.stop().await.unwrap();
