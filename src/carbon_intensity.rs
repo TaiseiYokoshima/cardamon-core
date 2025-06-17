@@ -95,8 +95,8 @@ pub async fn fetch_ci(code: &str, date: &DateTime<Utc>) -> anyhow::Result<f64> {
         .checked_sub_months(Months::new(1))
         .context("Error parsing month")?;
 
-    let start_date = format!("{}-{}", start.year(), start.month());
-    let end_date = format!("{}-{}", end.year(), end.month());
+    let start_date = start.format("%Y-%m");
+    let end_date = end.format("%Y-%m");
 
     let url = format!(
         "{}/monthly?entity_code={}&start_date={}&end_date={}&api_key={}",
