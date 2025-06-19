@@ -1,7 +1,10 @@
 use crate::config::ProcessToObserve;
 use crate::metrics::{CpuMetrics, MetricsLog};
-use bollard::container::{ListContainersOptions, Stats, StatsOptions};
-use bollard::Docker;
+use bollard::secret::ContainerStatsResponse;
+use bollard::{
+    query_parameters::{ListContainersOptions, StatsOptions},
+    Docker,
+};
 use chrono::Utc;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
@@ -70,7 +73,7 @@ pub async fn keep_logging(
     let container_list = docker
         .list_containers(Some(ListContainersOptions {
             all: true,
-            filters: filter,
+            filters: Some(filter),
             ..Default::default()
         }))
         .await;
@@ -99,7 +102,7 @@ pub async fn keep_logging(
         // continue;
     }
 
-    let mut last_stats_per_container: HashMap<String, Stats> = HashMap::new();
+    let mut last_stats_per_container: HashMap<String, ContainerStatsResponse> = HashMap::new();
     loop {
         for container in &containers {
             if let Some(container_id) = container.id.as_ref() {
@@ -131,14 +134,18 @@ pub async fn keep_logging(
                                 container_id,
                                 container_name.to_string(),
                                 &stats,
-                                &previous,
+                                previous,
                             );
                             debug!(
                                 "Pushing metrics to metrics log form container name/s {:?}",
                                 container.names
                             );
-                            metrics_log.lock().unwrap().push_metrics(cpu_metrics);
-                            debug!("Logged metrics for container {}", container_id);
+                            if let Some(cpu_metrics) = cpu_metrics {
+                                metrics_log.lock().unwrap().push_metrics(cpu_metrics);
+                                debug!("Logged metrics for container {}", container_id);
+                            } else {
+                                warn!("CPU metrics was None {}", container_id)
+                            }
                         }
                         last_stats_per_container.insert(container_name.to_owned(), stats);
                     }
@@ -163,14 +170,18 @@ pub async fn keep_logging(
 fn calculate_cpu_metrics(
     container_id: &str,
     container_name: String,
-    stats: &Stats,
-    previous_stats: &Stats,
-) -> CpuMetrics {
-    let core_count = stats.cpu_stats.online_cpus.unwrap_or(0);
-    let cpu_delta =
-        stats.cpu_stats.cpu_usage.total_usage - previous_stats.cpu_stats.cpu_usage.total_usage;
-    let system_delta = stats.cpu_stats.system_cpu_usage.unwrap_or(0)
-        - previous_stats.cpu_stats.system_cpu_usage.unwrap_or(0);
+    stats: &ContainerStatsResponse,
+    prev_stats: &ContainerStatsResponse,
+) -> Option<CpuMetrics> {
+    let cpu_stats = stats.cpu_stats.as_ref()?;
+    let cpu_usage = cpu_stats.cpu_usage.as_ref()?;
+
+    let prev_cpu_stats = prev_stats.cpu_stats.as_ref()?;
+    let prev_cpu_usage = prev_cpu_stats.cpu_usage.as_ref()?;
+
+    let core_count = cpu_stats.online_cpus?;
+    let cpu_delta = cpu_usage.total_usage? - prev_cpu_usage.total_usage?;
+    let system_delta = cpu_stats.system_cpu_usage? - prev_cpu_stats.system_cpu_usage?;
     let cpu_usage = if system_delta > 0 {
         (cpu_delta as f64 / system_delta as f64) * core_count as f64
     } else {
@@ -180,20 +191,17 @@ fn calculate_cpu_metrics(
         "Calculated CPU metrics for container {} ({}), cpu percentage: {}",
         container_id, container_name, cpu_usage
     );
-    CpuMetrics {
+    Some(CpuMetrics {
         process_id: container_id.to_string(),
         process_name: container_name,
         cpu_usage,
         core_count: core_count as i32,
         timestamp: Utc::now().timestamp_millis(),
-    }
+    })
 }
 
 pub async fn get_container_status(container_name: &str) -> anyhow::Result<String> {
-    let docker = Docker::connect_with_defaults().map_err(|e| {
-        error!("Failed to connect to Docker: {}", e);
-        anyhow::anyhow!("Failed to connect to Docker: {}", e)
-    })?;
+    let docker = Docker::connect_with_defaults().map_err(anyhow::Error::from)?;
 
     debug!("Successfully connected to Docker");
 
@@ -205,14 +213,11 @@ pub async fn get_container_status(container_name: &str) -> anyhow::Result<String
     let containers = docker
         .list_containers(Some(ListContainersOptions {
             all: true,
-            filters: filter,
+            filters: Some(filter),
             ..Default::default()
         }))
         .await
-        .map_err(|e| {
-            error!("Failed to list containers: {}", e);
-            anyhow::anyhow!("Failed to list containers: {}", e)
-        })?;
+        .map_err(anyhow::Error::from)?;
 
     debug!(
         "Successfully listed containers. Count: {}",
@@ -220,11 +225,16 @@ pub async fn get_container_status(container_name: &str) -> anyhow::Result<String
     );
 
     if containers.is_empty() {
-        return Ok(String::from("not_found"));
+        return Err(anyhow::anyhow!(
+            "No container found with name {container_name}"
+        ));
     }
 
     let container = &containers[0];
-    let status = container.state.as_deref().unwrap_or("unknown").to_string();
+    let status = container
+        .state
+        .ok_or(anyhow::anyhow!("Container is in unknown state"))?
+        .to_string();
     debug!("Container '{}' status: {}", container_name, status);
 
     Ok(status)
@@ -241,8 +251,12 @@ mod tests {
         },
     };
     use bollard::{
-        container::{Config, CreateContainerOptions, RemoveContainerOptions},
-        image::{BuildImageOptions, RemoveImageOptions},
+        body_full,
+        query_parameters::{
+            BuildImageOptions, CreateContainerOptions, RemoveContainerOptions, RemoveImageOptions,
+            StartContainerOptions,
+        },
+        secret::ContainerCreateBody,
         Docker,
     };
     use bytes::Bytes;
@@ -264,9 +278,9 @@ mod tests {
         // image_id
         // Smallest image I can create that doesn't exit ( 4.2mb), alpine is 7 ish
         let dockerfile = r#"
-FROM busybox
-CMD ["sleep", "infinity"]
-"#;
+            FROM busybox
+            CMD ["sleep", "infinity"]
+        "#;
 
         // Bollard has 2 options for creating an image
         // 1 - Dockerfile from *remote* url
@@ -303,12 +317,12 @@ CMD ["sleep", "infinity"]
         let image_id_latest = format!("{}:latest", image_id);
         // Build the image
         let options = BuildImageOptions {
-            dockerfile: "Dockerfile",
-            t: &image_id_latest,
+            dockerfile: "Dockerfile".to_string(),
+            t: Some(image_id_latest.to_string()),
             ..Default::default()
         };
         // build image
-        let mut build_stream = docker.build_image(options, None, Some(tar_bytes));
+        let mut build_stream = docker.build_image(options, None, Some(body_full(tar_bytes)));
         // Docker streams the build process of making an image, meaning you can stop half-way if
         // something is wrong / you want a timeout for example.
         // In this case we want to continue until there's no more
@@ -323,10 +337,10 @@ CMD ["sleep", "infinity"]
         let container = docker
             .create_container(
                 Some(CreateContainerOptions {
-                    name: container_name.as_str(),
+                    name: Some(container_name.clone()),
                     ..Default::default()
                 }),
-                Config {
+                ContainerCreateBody {
                     image: Some(image_id_latest),
                     ..Default::default()
                 },
@@ -335,7 +349,7 @@ CMD ["sleep", "infinity"]
             .unwrap();
 
         docker
-            .start_container::<String>(&container.id, None)
+            .start_container(&container.id, Option::<StartContainerOptions>::None)
             .await
             .unwrap();
 

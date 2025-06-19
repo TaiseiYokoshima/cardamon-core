@@ -258,7 +258,7 @@ impl<'a> ScenarioRunDataset<'a> {
         &self.data
     }
 
-    pub fn by_iteration(&'a self) -> ScenarioRunIterationDataset {
+    pub fn by_iteration(&'a self) -> ScenarioRunIterationDataset<'a> {
         &self.data
     }
 
