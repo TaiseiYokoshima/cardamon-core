@@ -2,165 +2,41 @@
 name = "11th Gen Intel(R) Core(TM) i9-11900KF @ 3.50GHz"
 curve = [171.2,0.0354,36.89,-10.13]
 
-
 [[process]]
-name = "test_axum_server"
+name = "bare_process"
 up = "./test_cardamon/target/release/test_cardamon"
 down = "kill {pid}"
 redirect.to = "file"
 process.type = "baremetal"
 
+[[process]]
+name = "docker_process"
+up = "docker compose -f ./test_cardamon/compose.yaml up -d"
+down = "docker compose -f ./test_cardamon/compose.yaml down"
+redirect.to = "file"
+process.type = "docker"
+process.containers = ["test_cardamon_container"]
+startup_grace = "8000ms"
+
 [[scenario]]
-name = "curl_bare_axum_test"
-desc = "Calls each instance of rand-api 1500 times"
+name = "bare_scenario"
+desc = "bare"
 command = "curl localhost:3000"
 iterations = 5
-processes = ["test_axum_server"]
+processes = ["bare_process"]
 
-[[observation]]
-name = "curl_bare_axum_test"
-scenarios = ["curl_bare_axum_test"]
-
-
-# Processes
-# ---------
-# This array of tables describes the components of your application that you 
-# would like cardamon to measure. 
-# 
-# processes contain the following properties:
-#   name: 
-#     type - string
-#     desc - must be unique 
-#     required - true
-#
-#   up: 
-#     type - string
-#     desc - command to execute the processes
-#     required - true
-#
-#   down: 
-#     type - string
-#     desc - command to stop the process. In the case of bare-metal processes 
-#            cardamon will pass the PID of the process to this command. You can
-#            use `{pid}` as a placeholder in the command e.g. `kill {pid}`.
-#     default: empty string
-#     required - false
-#   
-#   proccess.type: 
-#     type - "baremetal" | "docker"
-#     desc - the type of process which is being executed
-#     required - true
-#
-#   process.containers: 
-#     type - string[]
-#     desc - docker processes may initiate multiple containers from a single 
-#            command, e.g. `docker compose up -d`. This is the list of 
-#            containers started by this process you would like cardamon to 
-#            measure.
-#     required - true (if `process.type` is "docker")
-#
-#   redirect.to: 
-#     type - "null" | "parent" | "file"
-#     desc - where to redirect this processes stdout and stderr. "null" ignores 
-#            output, "parent" attaches the processes output to cardamon, "file"
-#            writes stdout and stderr to a file of the same name as this 
-#            process e.g. db.stdout.
-#     default: "file"
-#     required - false
-# 
-#   startup_grace:
-#     type - string
-#     desc - the duration Cardamon will wait before running scenarios. Remember
-#            to include the duration unit. e.g ms, s etc
-#     default - "2000ms"
-#     required - false
-#
-# EXAMPLE
-# -------
-# [[process]]
-# name = "db"
-# up = "docker compose up -d"
-# down = "docker compose down"
-# redirect.to = "file"
-# process.type = "docker"
-# process.containers = ["postgres"]
-# startup_grace = "4000ms"
-
-[[process]]
-name = "test_proc"
-up = "bash -c \"while true; do shuf -i 0-1337 -n 1; done\""
-down = "kill {pid}"
-redirect.to = "file"
-process.type = "baremetal"
-
-# Scenarios
-# ---------
-# This array of tables describes the scenarios that cardamon can run. They can
-# be any kind of executable and are designed to place your application under 
-# consistent load each time they are run. Examples include bash scripts which 
-# `curl` a REST endpoint or nodejs scripts using playwright.js to control a 
-# webpage.
-#
-# scenarios contain the following properties:
-#   name:
-#     type - string
-#     desc - must be unique
-#     required - true
-#
-#   desc:
-#     type - string
-#     desc - a short description of the scenario to remind you what it does
-#     required - false
-#
-#   command:
-#     type - string
-#     desc - the command to execute this scenario
-#     required - true
-#
-#   iterations:
-#     type - integer
-#     desc - the number of times cardamon should execute this scenario per run.
-#            It's better to run scenarios multiple times and take an average.
-#     default - 1
-#     required - false
-#
-#   processes:
-#     type - string[]
-#     desc - a list of the processes which need to be started before executing
-#            this scenario.
-#     required - true
-#
 [[scenario]]
-name = "sleep"
-desc = "Sleeps for 10 seconds, a real scenario would call your app"
-command = "sleep 10"
-iterations = 2
-processes = ["test_proc"]
+name = "docker_scenario"
+desc = "docekr"
+command = "curl localhost:3000"
+iterations = 5
+processes = ["docker_process"]
 
-
-# Observations
-# ---------------
-# This array of tables allows you to group scenarios together to make it 
-# easier to execute multiple scenarios in a single run.
-#
-# obserations contain the following properties:
-#   name:
-#     type - string
-#     desc - a unique name
-#     required - true
-#
-#   observe.scenarios:
-#     type - string[]
-#     desc - a list of scenarios to execute whilst observing the processes 
-#            required to run all scenarios
-#     required - required if observe.processes is not defined
-#
-#   observe.processes:
-#     type - string[]
-#     desc - a list of processes to execute and observe. Running an observation
-#            with this property set runs Cardamon in Live mode.
-#     required - required if observe.scenarios is not defined.
-#
 [[observation]]
-name = "test_obs"
-scenarios = ["sleep"]
+name = "bare"
+scenarios = ["bare_scenario"]
+
+
+[[observation]]
+name = "docker"
+scenarios = ["docker_scenario"]
