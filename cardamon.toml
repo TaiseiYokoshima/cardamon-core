@@ -5,7 +5,7 @@ curve = [171.2,0.0354,36.89,-10.13]
 
 [[process]]
 name = "test_axum_server"
-up = "/home/rom/test_cardmon/target/release/test_cardmon"
+up = "./test_cardamon/target/release/test_cardamon"
 down = "kill {pid}"
 redirect.to = "file"
 process.type = "baremetal"
