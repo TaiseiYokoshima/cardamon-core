@@ -1,6 +1,26 @@
 [cpu]
-name = "AMD Ryzen 7 PRO 6850U with Radeon Graphics"
-curve = [7.627190097500079,0.07551567953624883,20.45110313049153,-1.5261422759740344]
+name = "11th Gen Intel(R) Core(TM) i9-11900KF @ 3.50GHz"
+curve = [171.2,0.0354,36.89,-10.13]
+
+
+[[process]]
+name = "test_axum_server"
+up = "/home/rom/test_cardmon/target/release/test_cardmon"
+down = "kill {pid}"
+redirect.to = "file"
+process.type = "baremetal"
+
+[[scenario]]
+name = "curl_bare_axum_test"
+desc = "Calls each instance of rand-api 1500 times"
+command = "curl localhost:3000"
+iterations = 5
+processes = ["test_axum_server"]
+
+[[observation]]
+name = "curl_bare_axum_test"
+scenarios = ["curl_bare_axum_test"]
+
 
 # Processes
 # ---------
@@ -23,7 +43,7 @@ curve = [7.627190097500079,0.07551567953624883,20.45110313049153,-1.526142275974
 #     desc - command to stop the process. In the case of bare-metal processes 
 #            cardamon will pass the PID of the process to this command. You can
 #            use `{pid}` as a placeholder in the command e.g. `kill {pid}`.
-#     default - empty string
+#     default: empty string
 #     required - false
 #   
 #   proccess.type: 
@@ -45,9 +65,9 @@ curve = [7.627190097500079,0.07551567953624883,20.45110313049153,-1.526142275974
 #            output, "parent" attaches the processes output to cardamon, "file"
 #            writes stdout and stderr to a file of the same name as this 
 #            process e.g. db.stdout.
-#     default - "file"
+#     default: "file"
 #     required - false
-#
+# 
 #   startup_grace:
 #     type - string
 #     desc - the duration Cardamon will wait before running scenarios. Remember

@@ -1,0 +1,34 @@
+[cpu]
+name = "11th Gen Intel(R) Core(TM) i9-11900KF @ 3.50GHz"
+avg_power = 125
+
+[[process]]
+name = "test_axum_server"
+up = "./test_cardmon"
+down = "kill {pid}"
+redirect.to = "file"
+process.type = "baremetal"
+
+[[process]]
+name = "rand-api-docker"
+up = "docker run -d --name c1 -p 4244:4243 rand-api"
+down = "bash -c 'docker stop c1 && docker rm c1'"
+redirect.to = "file"
+process.type = "docker"
+process.containers = ["c1"]
+startup_grace = "8000ms"
+
+[[scenario]]
+name = "curl_bare_axum_test"
+desc = "Calls each instance of rand-api 1500 times"
+command = "curl localhost:3000"
+iterations = 5
+processes = ["test_axum_server"]
+
+[[observation]]
+name = "curl_bare_axum_test"
+scenarios = ["curl_bare_axum_test"]
+
+[[observation]]
+name = "live_monitor"
+processes = ["test_proc1", "test_proc2"]
